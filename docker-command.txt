@@ -1,0 +1,20 @@
+# build image
+docker build -t croptic-deep-learning .
+
+# Check compability
+docker run --rm -it --gpus all croptic-deep-learning 
+
+python - <<'EOF'
+import torch, mmcv, transformers, sahi
+print("Torch:", torch.__version__, "CUDA:", torch.version.cuda)
+print("MMCV:", mmcv.__version__)
+print("Transformers:", transformers.__version__)
+print("SAHI:", sahi.__version__)
+EOF
+
+# Run pipeline test
+#test pipeline
+docker run --rm --gpus all -v %cd%:/app -w /app croptic-deep-learning:latest python test/pipeline/pipeline.py
+
+#test oil palm detector
+docker run --rm --gpus all -v %cd%:/app -w /app croptic-deep-learning:latest python test/palm_detection/palm_detection_test.py

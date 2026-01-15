@@ -1,0 +1,33 @@
+# Ignore all Python bytecode caches
+__pycache__/
+**/__pycache__/
+
+# Ignore all .pyc files
+*.pyc
+
+# VSCode specific
+.vscode/
+
+# Ignore the top-level models directory and everything inside it
+/models/
+
+# (Optional: ignore all models dirs anywhere, uncomment if needed)
+# **/models/
+
+# Ignore other common Python dev artifacts (optional, good practice)
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+.DS_Store
+*.log
+.env
+.venv/
+
+# Igoner typical larger file 
+*.tif
+*.tiff
+*.json
+*.geojson
+*.aux.xml
+*.png
