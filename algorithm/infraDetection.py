@@ -16,7 +16,40 @@ import cv2
 import os
 
 class InfraDetector:
+    """
+    Semantic segmentation for infrastructure detection using HuggingFace Transformers.
+
+    Supports large images via SAHI-style sliced prediction with overlap stitching.
+    Extracts vector polygons from raster masks using OpenCV contours. Detects 
+    classes like 'building', 'road', etc. (model-dependent). Provides GeoJSON 
+    export with georeferencing support.
+
+    Key Features:
+        • Transformers + SAHI slicing (512×512 tiles, 20% overlap)
+        • Confidence-based filtering (≥0.9 threshold)
+        • Pixel → GeoJSON polygon conversion  
+        • Georeferenced export via TIFF metadata
+        • Interactive visualization with label overlays
+        • Model-agnostic (auto-discovers id2label classes)
+
+    Workflow:
+        1. Initialize(model_name="nvidia/segformer-b0-finetuned-ade-512-512")
+        2. predict_sliced(image, ["building"]) for large images
+        3. save_polygons_to_geojson(image.tif, output.geojson)
+        4. show_segmented() for visualization
+    """
+
     def __init__(self, model_name: str, device: str = "cuda"):
+        """
+        Load semantic segmentation model from HuggingFace.
+
+        Parameters
+        ----------
+        model_name : str
+            HF model ID (e.g. "nvidia/segformer-b0-finetuned-ade-512-512")
+        device : str, default="cuda"
+            "cuda" or "cpu"
+        """
         self.processor = AutoImageProcessor.from_pretrained(model_name)
         self.model = AutoModelForSemanticSegmentation.from_pretrained(model_name)
         self.model.to(device)
@@ -26,6 +59,19 @@ class InfraDetector:
         self.last_predicted_polygons: Optional[Dict[str, List[List[List[float]]]]] = None
 
     def preprocess(self, image_input: Union[str, Image.Image]) -> Image.Image:
+        """
+        Load and standardize image to RGB PIL format.
+
+        Parameters
+        ----------
+        image_input : str or PIL.Image
+            Image path or PIL image
+
+        Returns
+        -------
+        PIL.Image
+            RGB PIL image (stored as self.last_image)
+        """
         if isinstance(image_input, str):
             image = Image.open(image_input).convert("RGB")
         else:
@@ -34,6 +80,23 @@ class InfraDetector:
         return image
 
     def mask_to_polygons(self, mask: np.ndarray, label_id: int) -> List[List[List[float]]]:
+        """
+        Extract polygon contours from binary mask using OpenCV.
+
+        Simplifies contours with CHAIN_APPROX_SIMPLE. Filters tiny contours.
+
+        Parameters
+        ----------
+        mask : np.ndarray
+            Semantic segmentation mask (H,W) int32
+        label_id : int
+            Class ID to extract
+
+        Returns
+        -------
+        List[List[List[float]]]
+            List of polygon rings: [[[x1,y1], [x2,y2], ...]]
+        """
         binary = (mask == label_id).astype(np.uint8)
         contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         polygons = []
@@ -45,6 +108,28 @@ class InfraDetector:
         return polygons
 
     def predict(self, image_input: Union[str, Image.Image], selected_labels: List[str]) -> Dict[str, List[List[List[float]]]]:
+        """
+        Single-image semantic segmentation (non-sliced).
+
+        For small images (<512×512). Returns label→polygons mapping.
+
+        Parameters
+        ----------
+        image_input : str or PIL.Image
+            Input image
+        selected_labels : List[str]
+            Model class names to extract (e.g. ["building"])
+
+        Returns
+        -------
+        Dict[str, List[List[List[float]]]]
+            {label_name: [polygons]}
+
+        Raises
+        ------
+        ValueError
+            Unknown label name
+        """
         image = self.preprocess(image_input)
         inputs = self.processor(images=image, return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
@@ -77,8 +162,31 @@ class InfraDetector:
         overlap_ratio: float = 0.2,
     ):
         """
-        Run semantic segmentation using SAHI-style slicing.
-        Reconstructs full-size mask by stitching slices.
+        High-resolution segmentation via sliced prediction.
+
+        SAHI-style: slices → predict → stitch → confidence filter → polygons.
+        Overlap averaging prevents edge artifacts.
+
+        Parameters
+        ----------
+        image_input : str or PIL.Image
+            Large input image (drone/aerial)
+        selected_labels : List[str]
+            Classes to extract polygons for
+        slice_height, slice_width : int, default=512
+            Tile size for processing
+        overlap_ratio : float, default=0.2
+            Tile overlap fraction
+
+        Returns
+        -------
+        Dict[str, List[List[List[float]]]]
+            {label: [polygons]} from full-resolution mask
+
+        Raises
+        ------
+        ValueError
+            Unknown labels
         """
         # Load original image
         image = self.preprocess(image_input)
@@ -151,9 +259,25 @@ class InfraDetector:
 
     @property
     def available_labels(self) -> List[str]:
+        """
+        Get all class names supported by current model.
+
+        Returns
+        -------
+        List[str]
+            Model id2label values
+        """
         return list(self.model.config.id2label.values())
 
     def get_labels_in_mask(self) -> List[int]:
+        """
+        Detect which classes appear in last_predicted_mask.
+
+        Returns
+        -------
+        List[int]
+            Present class IDs (pixel values >0)
+        """
         present = np.unique(self.last_predicted_mask)
         return [int(i) for i in present if np.sum(self.last_predicted_mask == i) > 0]
 
@@ -163,7 +287,21 @@ class InfraDetector:
         geojson_path
     ):
         """
-        Saves polygons from last_predicted_polygons as GeoJSON, optionally georeferenced.
+        Export last_predicted_polygons as GeoJSON FeatureCollection.
+
+        Optional pixel→geographic transformation using TIFF metadata.
+
+        Parameters
+        ----------
+        tif_path : str, optional
+            Georeference source (pixel→lon/lat)
+        geojson_path : str
+            Output GeoJSON file
+
+        Raises
+        ------
+        ValueError
+            No polygons available
         """
         label_polygon_dict = self.last_predicted_polygons
         if label_polygon_dict is None:
@@ -213,6 +351,26 @@ class InfraDetector:
         overlay_alpha=0.5,
         figsize=(15, 8)
     ):
+        """
+        Interactive visualization: original | segmentation overlay.
+
+        Features:
+        • Random distinct colors per class
+        • Centroid label text overlays  
+        • Legend for detected classes only
+        • Side-by-side comparison
+
+        Parameters
+        ----------
+        output_image_path : str, optional
+            Save PNG
+        legend : bool, default=True
+            Show class legend
+        overlay_alpha : float, default=0.5
+            Transparency
+        figsize : tuple, default=(15,8)
+            Figure size
+        """
         if self.last_image is None or self.last_predicted_mask is None:
             raise ValueError("Run predict first.")
         id2label = self.model.config.id2label

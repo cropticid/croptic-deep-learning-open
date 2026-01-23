@@ -1,0 +1,417 @@
+
+<!DOCTYPE html>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>algorithm.clustering &#8212; Croptic Deep Learning Open  documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/alabaster.css" />
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/jquery.js"></script>
+    <script src="../../_static/underscore.js"></script>
+    <script src="../../_static/_sphinx_javascript_frameworks_compat.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+   
+  <link rel="stylesheet" href="../../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  <div class="document">
+    
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper"><div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../index.html">Documentation overview</a><ul>
+  <li><a href="../index.html">Module code</a><ul>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<div id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</div>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+        </div>
+      </div>
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <h1>Source code for algorithm.clustering</h1><div class="highlight"><pre>
+<span></span><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">List</span><span class="p">,</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">Optional</span><span class="p">,</span> <span class="n">Union</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">sklearn.cluster</span><span class="w"> </span><span class="kn">import</span> <span class="n">KMeans</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">scipy.spatial</span><span class="w"> </span><span class="kn">import</span> <span class="n">ConvexHull</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">Counter</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">cv2</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">rasterio</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">utils.tiff_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_tif_image</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">schema.bbox</span><span class="w"> </span><span class="kn">import</span> <span class="n">BoundingBox</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">schema.ClusterPolygon</span><span class="w"> </span><span class="kn">import</span> <span class="n">ClusterPolygon</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">algorithm.statistics</span><span class="w"> </span><span class="kn">import</span> <span class="n">compute_average_leaf_width_per_cluster</span>
+
+<div class="viewcode-block" id="ClusterPalm"><a class="viewcode-back" href="../../index.html#algorithm.clustering.ClusterPalm">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">ClusterPalm</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Clustering palm tree bounding boxes into spatial groups with convex hull polygons.</span>
+
+<span class="sd">    This class performs K-means clustering on palm tree bounding boxes (using center </span>
+<span class="sd">    coordinates + size features), filters small clusters, and generates convex hull </span>
+<span class="sd">    polygons for visualization and geospatial analysis. Supports both pixel and </span>
+<span class="sd">    georeferenced coordinate systems via TIFF metadata.</span>
+
+<span class="sd">    Key Features:</span>
+<span class="sd">        • K-means clustering with configurable cluster count</span>
+<span class="sd">        • Minimum cluster size filtering </span>
+<span class="sd">        • Convex hull polygon generation per cluster</span>
+<span class="sd">        • GeoJSON export with optional georeferencing</span>
+<span class="sd">        • Leaf width computation per cluster</span>
+<span class="sd">        • Interactive visualization with matplotlib</span>
+
+<span class="sd">    Workflow:</span>
+<span class="sd">        1. Initialize with n_clusters and min_cluster parameters</span>
+<span class="sd">        2. Call predict(bbox_list, image) to cluster and generate polygons</span>
+<span class="sd">        3. Access self.polygons: Dict[int, ClusterPolygon] with cluster results</span>
+<span class="sd">        4. Export to GeoJSON or visualize with draw_cluster_polygons()</span>
+
+<span class="sd">    Attributes</span>
+<span class="sd">    ----------</span>
+<span class="sd">    n_clusters : int</span>
+<span class="sd">        Number of clusters to generate (default: 5)</span>
+<span class="sd">    min_cluster : int  </span>
+<span class="sd">        Minimum trees per cluster (default: 5)</span>
+<span class="sd">    image : np.ndarray | None</span>
+<span class="sd">        Reference image (RGB numpy array)</span>
+<span class="sd">    canvas_h, canvas_w : int | None</span>
+<span class="sd">        Image height and width in pixels</span>
+<span class="sd">    bbox_list : List[BoundingBox] | None</span>
+<span class="sd">        Input palm tree bounding boxes</span>
+<span class="sd">    polygons : Dict[int, ClusterPolygon] | None</span>
+<span class="sd">        Clustering results {cluster_id: ClusterPolygon}</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">n_clusters</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
+        <span class="n">min_cluster</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Initialize clustering configuration only.</span>
+<span class="sd">        Actual image and bounding boxes are set by calling .predict().</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        n_clusters : int, default=5</span>
+<span class="sd">            Target number of clusters for K-means</span>
+<span class="sd">        min_cluster : int, default=5</span>
+<span class="sd">            Discard clusters with fewer trees than this threshold</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">n_clusters</span> <span class="o">=</span> <span class="n">n_clusters</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">min_cluster</span> <span class="o">=</span> <span class="n">min_cluster</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">image</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">canvas_h</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">canvas_w</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">bbox_list</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span> <span class="o">=</span> <span class="kc">None</span>
+
+<div class="viewcode-block" id="ClusterPalm.predict"><a class="viewcode-back" href="../../index.html#algorithm.clustering.ClusterPalm.predict">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">predict</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">bbox_list</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">BoundingBox</span><span class="p">],</span>
+        <span class="n">image</span><span class="p">:</span> <span class="n">Union</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Perform clustering and generate convex hull polygons.</span>
+
+<span class="sd">        This method:</span>
+<span class="sd">        1. Loads image (supports TIFF via load_tif_image or regular images)</span>
+<span class="sd">        2. Extracts features: [center_x, center_y, width, height] per bbox</span>
+<span class="sd">        3. Applies K-means clustering with size filtering</span>
+<span class="sd">        4. Generates normalized convex hull polygons per cluster</span>
+<span class="sd">        5. Stores results in self.polygons, self.bbox_list, self.image</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        bbox_list : List[BoundingBox]</span>
+<span class="sd">            Palm tree detections from PalmDetector</span>
+<span class="sd">        image : str or np.ndarray</span>
+<span class="sd">            Image path (TIFF/JPG/PNG) or numpy array (HWC RGB)</span>
+
+<span class="sd">        Returns</span>
+<span class="sd">        -------</span>
+<span class="sd">        Dict[int, ClusterPolygon]</span>
+<span class="sd">            {cluster_id: ClusterPolygon(polygon, center, count)}</span>
+
+<span class="sd">        Raises</span>
+<span class="sd">        ------</span>
+<span class="sd">        ValueError</span>
+<span class="sd">            If image loading fails</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">image</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span><span class="o">.</span><span class="n">endswith</span><span class="p">((</span><span class="s2">&quot;.tif&quot;</span><span class="p">,</span> <span class="s2">&quot;.tiff&quot;</span><span class="p">)):</span>
+                <span class="n">img</span> <span class="o">=</span> <span class="n">load_tif_image</span><span class="p">(</span><span class="n">image</span><span class="p">)</span> 
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">img</span> <span class="o">=</span> <span class="n">cv2</span><span class="o">.</span><span class="n">imread</span><span class="p">(</span><span class="n">image</span><span class="p">)</span>
+                <span class="n">img</span> <span class="o">=</span> <span class="n">cv2</span><span class="o">.</span><span class="n">cvtColor</span><span class="p">(</span><span class="n">img</span><span class="p">,</span> <span class="n">cv2</span><span class="o">.</span><span class="n">COLOR_BGR2RGB</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">image</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">):</span>
+            <span class="n">img</span> <span class="o">=</span> <span class="n">image</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">img</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">image</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">image</span> <span class="o">=</span> <span class="n">img</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">canvas_h</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">canvas_w</span> <span class="o">=</span> <span class="n">img</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">img</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">bbox_list</span> <span class="o">=</span> <span class="n">bbox_list</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cluster_polygons</span><span class="p">()</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cluster_polygons</span><span class="p">()</span></div>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_cluster_polygons</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="n">ClusterPolygon</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Cluster bounding boxes and generate polygons using current image and bbox_list.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">bbox_list</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">image</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Call fit() with bbox_list and image before clustering.&quot;</span><span class="p">)</span>
+
+        <span class="n">fitur</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">centers</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">bbox</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">bbox_list</span><span class="p">:</span>
+            <span class="n">width</span> <span class="o">=</span> <span class="n">bbox</span><span class="o">.</span><span class="n">x2</span> <span class="o">-</span> <span class="n">bbox</span><span class="o">.</span><span class="n">x1</span>
+            <span class="n">height</span> <span class="o">=</span> <span class="n">bbox</span><span class="o">.</span><span class="n">y2</span> <span class="o">-</span> <span class="n">bbox</span><span class="o">.</span><span class="n">y1</span>
+            <span class="n">center_x</span> <span class="o">=</span> <span class="p">(</span><span class="n">bbox</span><span class="o">.</span><span class="n">x1</span> <span class="o">+</span> <span class="n">bbox</span><span class="o">.</span><span class="n">x2</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span>
+            <span class="n">center_y</span> <span class="o">=</span> <span class="p">(</span><span class="n">bbox</span><span class="o">.</span><span class="n">y1</span> <span class="o">+</span> <span class="n">bbox</span><span class="o">.</span><span class="n">y2</span><span class="p">)</span> <span class="o">/</span> <span class="mi">2</span>
+            <span class="n">fitur</span><span class="o">.</span><span class="n">append</span><span class="p">([</span><span class="n">center_x</span><span class="p">,</span> <span class="n">center_y</span><span class="p">,</span> <span class="n">width</span><span class="p">,</span> <span class="n">height</span><span class="p">])</span>
+            <span class="n">centers</span><span class="o">.</span><span class="n">append</span><span class="p">([</span><span class="n">center_x</span><span class="p">,</span> <span class="n">center_y</span><span class="p">])</span>
+
+        <span class="n">X</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">fitur</span><span class="p">)</span>
+        <span class="n">centers</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">centers</span><span class="p">)</span>
+        <span class="n">kmeans</span> <span class="o">=</span> <span class="n">KMeans</span><span class="p">(</span><span class="n">n_clusters</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">n_clusters</span><span class="p">,</span> <span class="n">random_state</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+        <span class="n">labels</span> <span class="o">=</span> <span class="n">kmeans</span><span class="o">.</span><span class="n">fit_predict</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+        <span class="n">count</span> <span class="o">=</span> <span class="n">Counter</span><span class="p">(</span><span class="n">labels</span><span class="p">)</span>
+        <span class="n">filtered_labels</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">l</span> <span class="k">if</span> <span class="n">count</span><span class="p">[</span><span class="n">l</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">min_cluster</span> <span class="k">else</span> <span class="o">-</span><span class="mi">1</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">labels</span><span class="p">])</span>
+        <span class="n">cx_min</span><span class="p">,</span> <span class="n">cx_max</span> <span class="o">=</span> <span class="n">centers</span><span class="p">[:,</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">(),</span> <span class="n">centers</span><span class="p">[:,</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">()</span>
+        <span class="n">cy_min</span><span class="p">,</span> <span class="n">cy_max</span> <span class="o">=</span> <span class="n">centers</span><span class="p">[:,</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">min</span><span class="p">(),</span> <span class="n">centers</span><span class="p">[:,</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">max</span><span class="p">()</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">norm</span><span class="p">(</span><span class="n">val</span><span class="p">,</span> <span class="n">amin</span><span class="p">,</span> <span class="n">amax</span><span class="p">,</span> <span class="n">cmax</span><span class="p">):</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">val</span> <span class="o">-</span> <span class="n">amin</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">amax</span> <span class="o">-</span> <span class="n">amin</span> <span class="o">+</span> <span class="mf">1e-8</span><span class="p">)</span> <span class="o">*</span> <span class="n">cmax</span>
+        <span class="n">norm_centers</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">column_stack</span><span class="p">((</span>
+            <span class="n">norm</span><span class="p">(</span><span class="n">centers</span><span class="p">[:,</span><span class="mi">0</span><span class="p">],</span> <span class="n">cx_min</span><span class="p">,</span> <span class="n">cx_max</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">canvas_w</span><span class="p">),</span>
+            <span class="n">norm</span><span class="p">(</span><span class="n">centers</span><span class="p">[:,</span><span class="mi">1</span><span class="p">],</span> <span class="n">cy_min</span><span class="p">,</span> <span class="n">cy_max</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">canvas_h</span><span class="p">),</span>
+        <span class="p">))</span>
+        
+        <span class="n">polygons</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">cid</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">n_clusters</span><span class="p">):</span>
+            <span class="n">idxs</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">filtered_labels</span> <span class="o">==</span> <span class="n">cid</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">idxs</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mi">3</span><span class="p">:</span>
+                <span class="n">pts</span> <span class="o">=</span> <span class="n">norm_centers</span><span class="p">[</span><span class="n">idxs</span><span class="p">]</span>
+                <span class="n">hull</span> <span class="o">=</span> <span class="n">ConvexHull</span><span class="p">(</span><span class="n">pts</span><span class="p">)</span>
+                <span class="n">poly_pts</span> <span class="o">=</span> <span class="n">pts</span><span class="p">[</span><span class="n">hull</span><span class="o">.</span><span class="n">vertices</span><span class="p">]</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+                <span class="n">mx</span><span class="p">,</span> <span class="n">my</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">pts</span><span class="p">[:,</span><span class="mi">0</span><span class="p">]),</span> <span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">pts</span><span class="p">[:,</span><span class="mi">1</span><span class="p">])</span>
+                <span class="n">polygons</span><span class="p">[</span><span class="n">cid</span><span class="p">]</span> <span class="o">=</span> <span class="n">ClusterPolygon</span><span class="p">(</span>
+                    <span class="n">polygon</span><span class="o">=</span><span class="n">poly_pts</span><span class="p">,</span>
+                    <span class="n">center</span><span class="o">=</span><span class="p">[</span><span class="n">mx</span><span class="p">,</span> <span class="n">my</span><span class="p">],</span>
+                    <span class="n">count</span><span class="o">=</span><span class="nb">len</span><span class="p">(</span><span class="n">idxs</span><span class="p">)</span>
+                <span class="p">)</span>
+        <span class="k">return</span> <span class="n">polygons</span>
+    
+<div class="viewcode-block" id="ClusterPalm.compute_leaf_width_per_cluster"><a class="viewcode-back" href="../../index.html#algorithm.clustering.ClusterPalm.compute_leaf_width_per_cluster">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">compute_leaf_width_per_cluster</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Compute average leaf/crown width per cluster in pixels.</span>
+
+<span class="sd">        Uses external statistics function to map bboxes to clusters via </span>
+<span class="sd">        centroid distance and computes: 2 * mean(distance from bbox center to edges).</span>
+
+<span class="sd">        Returns</span>
+<span class="sd">        -------</span>
+<span class="sd">        Dict[int, float]</span>
+<span class="sd">            {cluster_id: average_leaf_width_pixels}</span>
+
+<span class="sd">        Raises</span>
+<span class="sd">        ------</span>
+<span class="sd">        ValueError</span>
+<span class="sd">            If predict() not called first (no polygons or bboxes)</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">bbox_list</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Run predict() first.&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">compute_average_leaf_width_per_cluster</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">polygons</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">bbox_list</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ClusterPalm.save_cluster_polygons_to_geojson"><a class="viewcode-back" href="../../index.html#algorithm.clustering.ClusterPalm.save_cluster_polygons_to_geojson">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">save_cluster_polygons_to_geojson</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span> 
+        <span class="n">tif_path</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>
+        <span class="n">geojson_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> 
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Export cluster polygons to GeoJSON FeatureCollection.</span>
+
+<span class="sd">        Supports georeferencing if TIFF path provided:</span>
+<span class="sd">        • Converts pixel (x,y) → geographic (lon,lat) using rasterio</span>
+<span class="sd">        • Includes CRS metadata from TIFF</span>
+<span class="sd">        • Each feature has cluster_id, center, count properties</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        tif_path : str, optional</span>
+<span class="sd">            Georeferenced TIFF for pixel→geo transformation</span>
+<span class="sd">        geojson_path : str, default=&quot;clusters.geojson&quot;</span>
+<span class="sd">            Output GeoJSON file path</span>
+
+<span class="sd">        Raises</span>
+<span class="sd">        ------</span>
+<span class="sd">        ValueError</span>
+<span class="sd">            If no polygons available</span>
+<span class="sd">        rasterio.errors.RasterioIOError</span>
+<span class="sd">            If TIFF file invalid</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;No polygons available. Run predict() first.&quot;</span><span class="p">)</span>
+
+        <span class="n">transform_func</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="n">crs</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="k">if</span> <span class="n">tif_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">rasterio</span><span class="o">.</span><span class="n">open</span><span class="p">(</span><span class="n">tif_path</span><span class="p">)</span> <span class="k">as</span> <span class="n">src</span><span class="p">:</span>
+                <span class="n">transform</span> <span class="o">=</span> <span class="n">src</span><span class="o">.</span><span class="n">transform</span>
+                <span class="n">crs</span> <span class="o">=</span> <span class="n">src</span><span class="o">.</span><span class="n">crs</span>
+                <span class="k">def</span><span class="w"> </span><span class="nf">pixel_to_geo</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">):</span>
+                    <span class="n">lon</span><span class="p">,</span> <span class="n">lat</span> <span class="o">=</span> <span class="n">rasterio</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">xy</span><span class="p">(</span><span class="n">transform</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">x</span><span class="p">)</span>
+                    <span class="k">return</span> <span class="p">[</span><span class="n">lon</span><span class="p">,</span> <span class="n">lat</span><span class="p">]</span>
+                <span class="n">transform_func</span> <span class="o">=</span> <span class="n">pixel_to_geo</span>
+
+        <span class="n">features</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">cid</span><span class="p">,</span> <span class="n">cp</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">poly</span> <span class="o">=</span> <span class="n">cp</span><span class="o">.</span><span class="n">polygon</span>
+            <span class="n">coords</span> <span class="o">=</span> <span class="p">[</span><span class="n">transform_func</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">)</span> <span class="k">if</span> <span class="n">transform_func</span> <span class="k">else</span> <span class="p">[</span><span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">]</span> <span class="k">for</span> <span class="n">x</span><span class="p">,</span> <span class="n">y</span> <span class="ow">in</span> <span class="n">poly</span><span class="p">]</span>
+            <span class="c1"># Close the ring as required by GeoJSON</span>
+            <span class="k">if</span> <span class="n">coords</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">!=</span> <span class="n">coords</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]:</span>
+                <span class="n">coords</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">coords</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+            <span class="n">props</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;cluster_id&quot;</span><span class="p">:</span> <span class="n">cid</span><span class="p">,</span> <span class="s2">&quot;center&quot;</span><span class="p">:</span> <span class="n">cp</span><span class="o">.</span><span class="n">center</span><span class="p">,</span> <span class="s2">&quot;count&quot;</span><span class="p">:</span> <span class="n">cp</span><span class="o">.</span><span class="n">count</span><span class="p">}</span>
+            <span class="n">feature</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;Feature&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;geometry&quot;</span><span class="p">:</span> <span class="p">{</span>
+                    <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;Polygon&quot;</span><span class="p">,</span>
+                    <span class="s2">&quot;coordinates&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">coords</span><span class="p">]</span>
+                <span class="p">},</span>
+                <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="n">props</span>
+            <span class="p">}</span>
+            <span class="n">features</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+        <span class="n">geojson</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;FeatureCollection&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;features&quot;</span><span class="p">:</span> <span class="n">features</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="n">crs</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">geojson</span><span class="p">[</span><span class="s2">&quot;crs&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">crs</span><span class="p">)}}</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">geojson_path</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+            <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">geojson</span><span class="p">,</span> <span class="n">f</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+        <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;✅ Cluster polygons saved as GeoJSON in </span><span class="si">{</span><span class="n">geojson_path</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ClusterPalm.draw_cluster_polygons"><a class="viewcode-back" href="../../index.html#algorithm.clustering.ClusterPalm.draw_cluster_polygons">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">draw_cluster_polygons</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">colors</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">show_label</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+        <span class="n">save_path</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+        <span class="n">ax</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">plt</span><span class="o">.</span><span class="n">Axes</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Visualize clusters overlaid on reference image.</span>
+
+<span class="sd">        Creates matplotlib figure with:</span>
+<span class="sd">        • Background image (self.image)</span>
+<span class="sd">        • Semi-transparent cluster polygons</span>
+<span class="sd">        • Cluster ID labels at polygon centers</span>
+<span class="sd">        • Proper aspect ratio preserving image dimensions</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        colors : List[str], optional</span>
+<span class="sd">            Polygon colors (cycles through list)</span>
+<span class="sd">        show_label : bool, default=True</span>
+<span class="sd">            Show cluster ID text labels</span>
+<span class="sd">        save_path : str, optional</span>
+<span class="sd">            Save figure to file (DPI=300)</span>
+<span class="sd">        ax : plt.Axes, optional</span>
+<span class="sd">            Existing axes for subplot integration</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;No polygons result available. </span><span class="se">\n</span><span class="s2">Run .fit() first&quot;</span><span class="p">)</span>
+        <span class="n">polys</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">polygons</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">image</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;No image available. </span><span class="se">\n</span><span class="s2">Run .fit() first&quot;</span><span class="p">)</span>
+        <span class="n">img</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">image</span>
+
+        <span class="k">if</span> <span class="n">img</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">polys</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Image and polygons must be set (call fit() first, or pass them explicitly).&quot;</span><span class="p">)</span>
+
+        <span class="n">canvas_h</span><span class="p">,</span> <span class="n">canvas_w</span> <span class="o">=</span> <span class="n">img</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">img</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">colors</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">colors</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;red&#39;</span><span class="p">,</span> <span class="s1">&#39;green&#39;</span><span class="p">,</span> <span class="s1">&#39;blue&#39;</span><span class="p">,</span> <span class="s1">&#39;orange&#39;</span><span class="p">,</span> <span class="s1">&#39;purple&#39;</span><span class="p">,</span> <span class="s1">&#39;brown&#39;</span><span class="p">,</span> <span class="s1">&#39;magenta&#39;</span><span class="p">,</span> <span class="s1">&#39;yellow&#39;</span><span class="p">,</span> <span class="s1">&#39;cyan&#39;</span><span class="p">]</span>
+
+        <span class="k">if</span> <span class="n">ax</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">fig</span><span class="p">,</span> <span class="n">ax</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">canvas_w</span> <span class="o">//</span> <span class="mi">300</span><span class="p">,</span> <span class="mi">8</span><span class="p">),</span> <span class="nb">max</span><span class="p">(</span><span class="n">canvas_h</span> <span class="o">//</span> <span class="mi">300</span><span class="p">,</span> <span class="mi">8</span><span class="p">)))</span>
+            <span class="n">close_fig</span> <span class="o">=</span> <span class="kc">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">close_fig</span> <span class="o">=</span> <span class="kc">False</span>
+
+        <span class="n">ax</span><span class="o">.</span><span class="n">set_xlim</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">canvas_w</span><span class="p">)</span>
+        <span class="n">ax</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">canvas_h</span><span class="p">)</span>
+        <span class="n">ax</span><span class="o">.</span><span class="n">set_facecolor</span><span class="p">(</span><span class="s1">&#39;white&#39;</span><span class="p">)</span>
+        <span class="n">ax</span><span class="o">.</span><span class="n">imshow</span><span class="p">(</span><span class="n">img</span><span class="p">,</span> <span class="n">extent</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="n">canvas_w</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">canvas_h</span><span class="p">])</span>
+
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="p">(</span><span class="n">cid</span><span class="p">,</span> <span class="n">cp</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">polys</span><span class="o">.</span><span class="n">items</span><span class="p">()):</span>
+            <span class="n">poly</span> <span class="o">=</span> <span class="n">cp</span><span class="o">.</span><span class="n">polygon</span>
+            <span class="n">center</span> <span class="o">=</span> <span class="n">cp</span><span class="o">.</span><span class="n">center</span>
+            <span class="n">color</span> <span class="o">=</span> <span class="n">colors</span><span class="p">[</span><span class="n">i</span> <span class="o">%</span> <span class="nb">len</span><span class="p">(</span><span class="n">colors</span><span class="p">)]</span>
+            <span class="n">poly_patch</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">Polygon</span><span class="p">(</span><span class="n">poly</span><span class="p">,</span> <span class="n">closed</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="n">color</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.35</span><span class="p">)</span>
+            <span class="n">ax</span><span class="o">.</span><span class="n">add_patch</span><span class="p">(</span><span class="n">poly_patch</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">show_label</span><span class="p">:</span>
+                <span class="n">ax</span><span class="o">.</span><span class="n">text</span><span class="p">(</span><span class="n">center</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">center</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="nb">str</span><span class="p">(</span><span class="n">cid</span><span class="p">),</span> <span class="n">color</span><span class="o">=</span><span class="s1">&#39;white&#39;</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">16</span><span class="p">,</span> <span class="n">fontweight</span><span class="o">=</span><span class="s1">&#39;bold&#39;</span><span class="p">,</span>
+                        <span class="n">ha</span><span class="o">=</span><span class="s1">&#39;center&#39;</span><span class="p">,</span> <span class="n">va</span><span class="o">=</span><span class="s1">&#39;center&#39;</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.9</span><span class="p">)</span>
+
+        <span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s1">&#39;Cluster polygons&#39;</span><span class="p">)</span>
+        <span class="n">ax</span><span class="o">.</span><span class="n">axis</span><span class="p">(</span><span class="s1">&#39;off&#39;</span><span class="p">)</span>
+        <span class="n">plt</span><span class="o">.</span><span class="n">tight_layout</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">save_path</span><span class="p">:</span>
+            <span class="n">plt</span><span class="o">.</span><span class="n">savefig</span><span class="p">(</span><span class="n">save_path</span><span class="p">,</span> <span class="n">dpi</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span> <span class="n">bbox_inches</span><span class="o">=</span><span class="s1">&#39;tight&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">close_fig</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">save_path</span><span class="p">:</span>
+            <span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">close_fig</span> <span class="ow">and</span> <span class="n">save_path</span><span class="p">:</span>
+            <span class="n">plt</span><span class="o">.</span><span class="n">close</span><span class="p">()</span></div></div>
+</pre></div>
+
+          </div>
+          
+        </div>
+      </div>
+    <div class="clearer"></div>
+  </div>
+    <div class="footer">
+      &#169;2026, Croptic Team.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 5.3.0</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>

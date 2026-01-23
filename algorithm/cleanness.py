@@ -10,8 +10,17 @@ from schema.bbox import BoundingBox
 from schema.GridCell import GridCell
 
 class ColorAnalyzer:
+    """
+    Simple HSV-based vegetation (greenness) detector for image patches.
+
+    Detects 'green' pixels using hue range [35°,85°] (green-yellow) and 
+    saturation threshold for vegetation discrimination. Returns green pixel ratio.
+
+    HSV Thresholds:
+        - Hue: 35-85 (green vegetation range)
+        - Saturation: ≥50% (excludes pale/grayscale)
+    """
     def analyze_greenness(self, bgr_patch: np.ndarray) -> float:
-        """Return percentage of 'vegetation' (green pixels) in the patch."""
         hsv_patch = cv2.cvtColor(bgr_patch, cv2.COLOR_BGR2HSV)
         h_mask = (hsv_patch[:, :, 0] >= 35) & (hsv_patch[:, :, 0] <= 85)
         s_mask = (hsv_patch[:, :, 1] >= 50)
@@ -20,7 +29,25 @@ class ColorAnalyzer:
         return float(greenness)
 
 class LandCleannessAnalyzer:
+    """
+    Grid-based land cleanness analysis excluding palm-covered areas.
+
+    Computes vegetation greenness per grid cell, excluding regions with
+    >70% palm coverage (auto-set cleanness=0.0).
+    
+    Outputs: cleanness matrix, GeoTIFF raster, overlay visualization.
+    """
+
     def __init__(self, grid_size: Tuple[int, int] = (20, 20)):
+        """
+        Initialize grid-based cleanness analyzer.
+
+        Parameters
+        ----------
+        grid_size : Tuple[int, int], default=(20, 20)
+            Grid dimensions (rows, cols) for cleanness analysis.
+            Higher resolution = finer granularity but slower processing.
+        """
         self.grid_rows, self.grid_cols = grid_size
         self.color_analyzer = ColorAnalyzer()
         self.image = None
@@ -31,7 +58,35 @@ class LandCleannessAnalyzer:
 
     def predict(self, image_path: str, palm_bboxes: List[BoundingBox] = None) -> Dict:
         """
-        Loads image, analyzes grid cleanness, and saves all used data internally.
+        Analyze land cleanness across grid cells.
+
+        1. Loads image (TIFF/RGB)
+        2. Creates uniform grid overlay  
+        3. Generates palm exclusion mask
+        4. Computes greenness per cell (skip >70% palm)
+        5. Stores matrix + stats in self.result
+
+        Parameters
+        ----------
+        image_path : str
+            TIFF/JPG/PNG image path
+        palm_bboxes : List[BoundingBox], optional
+            Palm detections to exclude from analysis
+
+        Returns
+        -------
+        Dict
+            {
+                'mean_cleanness': float,
+                'cleanness_matrix': np.ndarray(rows,cols), 
+                'grid_cells': List[GridCell],
+                'image_shape': Tuple[int,int]
+            }
+
+        Raises
+        ------
+        ValueError
+            Cannot load image
         """
         self.image_path = image_path
         if image_path.lower().endswith((".tif", ".tiff")):
@@ -71,6 +126,21 @@ class LandCleannessAnalyzer:
         return self.result
 
     def _create_grid(self, width: int, height: int) -> List[GridCell]:
+        """
+        Generate uniform rectangular grid cells covering image.
+
+        Handles non-divisible dimensions (truncates edge cells).
+
+        Parameters
+        ----------
+        width, height : int
+            Image dimensions
+
+        Returns
+        -------
+        List[GridCell]
+            Grid cells with row/col/x1/y1/x2/y2
+        """
         cells = []
         cell_width = width // self.grid_cols
         cell_height = height // self.grid_rows
@@ -84,6 +154,21 @@ class LandCleannessAnalyzer:
         return cells
 
     def _create_palm_mask(self, width: int, height: int, palm_bboxes: List[BoundingBox]) -> np.ndarray:
+        """
+        Binary mask marking palm-covered pixels.
+
+        Parameters
+        ----------
+        width, height : int
+            Image dimensions
+        palm_bboxes : List[BoundingBox]
+            Palm tree bounding boxes
+
+        Returns
+        -------
+        np.ndarray
+            (height,width) uint8 mask [0,1]
+        """
         mask = np.zeros((height, width), dtype=np.uint8)
         for bbox in palm_bboxes:
             mask[
@@ -93,6 +178,21 @@ class LandCleannessAnalyzer:
         return mask
 
     def save_cleanness_heatmap(self, result: Optional[Dict] = None, save_path: Optional[str] = None, alpha: float = 0.5):
+        """
+        Create and save RGB overlay visualization.
+
+        Colormap: SUMMER (yellow=low → green=high cleanness)
+        Blend: image * (1-alpha) + heatmap * alpha
+
+        Parameters
+        ----------
+        result : Dict, optional
+            Analysis result (uses self.result)
+        save_path : str, optional
+            Output PNG (DPI=300)
+        alpha : float, default=0.5
+            Heatmap overlay transparency
+        """
         if result is None:
             if self.result is None or self.image is None:
                 raise ValueError("No cleanness analysis result available. \nRun .fit() first")
@@ -118,7 +218,23 @@ class LandCleannessAnalyzer:
 
     def save_cleanness_raster(self, output_tif_path: str = "greenness_grid.tif", dtype='float32'):
         """
-        Save a cleanness numpy matrix as a georeferenced GeoTIFF raster.
+        Export cleanness matrix as georeferenced GeoTIFF.
+
+        Preserves original image CRS/transform. Interpolates grid to image resolution.
+
+        Parameters
+        ----------
+        output_tif_path : str, default="greenness_grid.tif"
+            Output GeoTIFF path
+        dtype : str, default='float32'
+            Raster data type
+
+        Raises
+        ------
+        ValueError
+            No analysis result or image path
+        rasterio.errors.RasterioIOError
+            TIFF writing failed
         """
         if self.image_path is None:
             raise ValueError("No image path info available; run analyze_cleanness first.")

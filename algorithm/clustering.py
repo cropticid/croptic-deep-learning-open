@@ -13,7 +13,46 @@ from utils.tiff_utils import load_tif_image
 from schema.bbox import BoundingBox
 from schema.ClusterPolygon import ClusterPolygon
 
+from algorithm.statistics import compute_average_leaf_width_per_cluster
+
 class ClusterPalm:
+    """
+    Clustering palm tree bounding boxes into spatial groups with convex hull polygons.
+
+    This class performs K-means clustering on palm tree bounding boxes (using center 
+    coordinates + size features), filters small clusters, and generates convex hull 
+    polygons for visualization and geospatial analysis. Supports both pixel and 
+    georeferenced coordinate systems via TIFF metadata.
+
+    Key Features:
+        • K-means clustering with configurable cluster count
+        • Minimum cluster size filtering 
+        • Convex hull polygon generation per cluster
+        • GeoJSON export with optional georeferencing
+        • Leaf width computation per cluster
+        • Interactive visualization with matplotlib
+
+    Workflow:
+        1. Initialize with n_clusters and min_cluster parameters
+        2. Call predict(bbox_list, image) to cluster and generate polygons
+        3. Access self.polygons: Dict[int, ClusterPolygon] with cluster results
+        4. Export to GeoJSON or visualize with draw_cluster_polygons()
+
+    Attributes
+    ----------
+    n_clusters : int
+        Number of clusters to generate (default: 5)
+    min_cluster : int  
+        Minimum trees per cluster (default: 5)
+    image : np.ndarray | None
+        Reference image (RGB numpy array)
+    canvas_h, canvas_w : int | None
+        Image height and width in pixels
+    bbox_list : List[BoundingBox] | None
+        Input palm tree bounding boxes
+    polygons : Dict[int, ClusterPolygon] | None
+        Clustering results {cluster_id: ClusterPolygon}
+    """
     def __init__(
         self,
         n_clusters: int = 5,
@@ -21,7 +60,14 @@ class ClusterPalm:
     ):
         """
         Initialize clustering configuration only.
-        Actual image and bounding boxes are set by calling .fit().
+        Actual image and bounding boxes are set by calling .predict().
+
+        Parameters
+        ----------
+        n_clusters : int, default=5
+            Target number of clusters for K-means
+        min_cluster : int, default=5
+            Discard clusters with fewer trees than this threshold
         """
         self.n_clusters = n_clusters
         self.min_cluster = min_cluster
@@ -37,7 +83,31 @@ class ClusterPalm:
         image: Union[str, np.ndarray]
     ):
         """
-        Set the bounding boxes and image, then perform clustering and store results.
+        Perform clustering and generate convex hull polygons.
+
+        This method:
+        1. Loads image (supports TIFF via load_tif_image or regular images)
+        2. Extracts features: [center_x, center_y, width, height] per bbox
+        3. Applies K-means clustering with size filtering
+        4. Generates normalized convex hull polygons per cluster
+        5. Stores results in self.polygons, self.bbox_list, self.image
+
+        Parameters
+        ----------
+        bbox_list : List[BoundingBox]
+            Palm tree detections from PalmDetector
+        image : str or np.ndarray
+            Image path (TIFF/JPG/PNG) or numpy array (HWC RGB)
+
+        Returns
+        -------
+        Dict[int, ClusterPolygon]
+            {cluster_id: ClusterPolygon(polygon, center, count)}
+
+        Raises
+        ------
+        ValueError
+            If image loading fails
         """
         if isinstance(image, str):
             if image.lower().endswith((".tif", ".tiff")):
@@ -104,6 +174,27 @@ class ClusterPalm:
                     count=len(idxs)
                 )
         return polygons
+    
+    def compute_leaf_width_per_cluster(self) -> Dict[int, float]:
+        """
+        Compute average leaf/crown width per cluster in pixels.
+
+        Uses external statistics function to map bboxes to clusters via 
+        centroid distance and computes: 2 * mean(distance from bbox center to edges).
+
+        Returns
+        -------
+        Dict[int, float]
+            {cluster_id: average_leaf_width_pixels}
+
+        Raises
+        ------
+        ValueError
+            If predict() not called first (no polygons or bboxes)
+        """
+        if self.polygons is None or self.bbox_list is None:
+            raise ValueError("Run predict() first.")
+        return compute_average_leaf_width_per_cluster(self.polygons, self.bbox_list)
 
     def save_cluster_polygons_to_geojson(
         self, 
@@ -111,8 +202,26 @@ class ClusterPalm:
         geojson_path: str, 
     ):
         """
-        Save self.polygons to a GeoJSON FeatureCollection.
-        If tif_path is given, converts image (x, y) to georeferenced (lon, lat).
+        Export cluster polygons to GeoJSON FeatureCollection.
+
+        Supports georeferencing if TIFF path provided:
+        • Converts pixel (x,y) → geographic (lon,lat) using rasterio
+        • Includes CRS metadata from TIFF
+        • Each feature has cluster_id, center, count properties
+
+        Parameters
+        ----------
+        tif_path : str, optional
+            Georeferenced TIFF for pixel→geo transformation
+        geojson_path : str, default="clusters.geojson"
+            Output GeoJSON file path
+
+        Raises
+        ------
+        ValueError
+            If no polygons available
+        rasterio.errors.RasterioIOError
+            If TIFF file invalid
         """
         if self.polygons is None:
             raise ValueError("No polygons available. Run predict() first.")
@@ -163,7 +272,24 @@ class ClusterPalm:
         ax: Optional[plt.Axes] = None,
     ):
         """
-        Visualize clusters stored in self.polygons over self.image (or override per call).
+        Visualize clusters overlaid on reference image.
+
+        Creates matplotlib figure with:
+        • Background image (self.image)
+        • Semi-transparent cluster polygons
+        • Cluster ID labels at polygon centers
+        • Proper aspect ratio preserving image dimensions
+
+        Parameters
+        ----------
+        colors : List[str], optional
+            Polygon colors (cycles through list)
+        show_label : bool, default=True
+            Show cluster ID text labels
+        save_path : str, optional
+            Save figure to file (DPI=300)
+        ax : plt.Axes, optional
+            Existing axes for subplot integration
         """
         if self.polygons is None:
             raise ValueError("No polygons result available. \nRun .fit() first")

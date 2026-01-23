@@ -153,3 +153,6 @@ For each input `.tif`, the pipeline writes a dedicated output folder (e.g., `out
   - GeoJSON containing palm cluster polygons for spatial grouping/visualization.
 
 These files can be opened directly in GIS software (e.g., QGIS) or consumed by geospatial tooling in Python.
+
+## 📚 Documentation
+[Docs](docs/_build/index.html)

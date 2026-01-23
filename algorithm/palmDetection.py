@@ -17,12 +17,57 @@ class_colors = {
 }
 
 class PalmDetector:
+    """
+    Object detection for oil palm trees using SAHI + MMDetection models.
+
+    High-resolution image support via sliced prediction with overlap. Detects 
+    three palm classes: 'sawit' (normal), 'sawit muda' (young), 'sawit abnormal'.
+    Provides pixel and georeferenced outputs (GeoJSON) for GIS integration.
+
+    Key Features:
+        • SAHI sliced prediction for large aerial/drone imagery (1024×1024 tiles)
+        • Multi-class detection: normal/young/abnormal palms
+        • Visual annotation with class-colored circles
+        • GeoJSON export with CRS from reference TIFF
+        • Supports TIFF (georeferenced) + standard image formats
+
+    Workflow:
+        1. Initialize with model weights + config
+        2. Call predict(image_path_or_array) 
+        3. Access self.bboxes: List[BoundingBox] and self.image_np
+        4. Visualize with draw() or export with save_bboxes_to_geojson()
+
+    Attributes
+    ----------
+    detection_model : AutoDetectionModel
+        Loaded SAHI+MMDet model instance
+    image_np : np.ndarray | None
+        Last processed RGB image
+    bboxes : List[BoundingBox] | None
+        Detection results with x1,y1,x2,y2,label
+    """
     def __init__(self,
                  model_path: str,
                  config_path: str,
                  confidence_threshold: float = 0.4,
                  image_size: int = 640,
                  device: str = "cuda"):
+        """
+        Initialize detector with pre-trained MMDetection model.
+
+        Parameters
+        ----------
+        model_path : str
+            Path to model weights (.pth)
+        config_path : str  
+            MMDetection config file (.py)
+        confidence_threshold : float, default=0.4
+            Minimum detection confidence
+        image_size : int, default=640
+            Model input resolution
+        device : str, default="cuda"
+            Device: "cuda", "cpu"
+        """
         self.detection_model = AutoDetectionModel.from_pretrained(
             model_type='mmdet',
             model_path=model_path,
@@ -35,6 +80,31 @@ class PalmDetector:
         self.bboxes: Optional[List[BoundingBox]] = None 
 
     def predict(self, image: Union[str, np.ndarray]) -> List[BoundingBox]:
+        """
+        Detect palm trees and return bounding boxes.
+
+        Supports:
+        • TIFF files (georeferenced via load_tif_image)
+        • JPG/PNG via OpenCV (auto BGR→RGB)
+        • Numpy arrays (RGB)
+
+        Stores results in self.bboxes and self.image_np.
+
+        Parameters
+        ----------
+        image : str or np.ndarray
+            Image path or RGB numpy array (HWC)
+
+        Returns
+        -------
+        List[BoundingBox]
+            Detected palms: BoundingBox(x1,y1,x2,y2,label)
+
+        Raises
+        ------
+        ValueError
+            Invalid image format
+        """
         # Load image if input is a file path
         if isinstance(image, str):
             if image.lower().endswith((".tif", ".tiff")):
@@ -53,6 +123,22 @@ class PalmDetector:
         return self.bboxes
 
     def detect(self) -> List[BoundingBox]:
+        """
+        Core detection using SAHI sliced prediction.
+
+        Uses 1024×1024 tiles with 20% overlap for high-res accuracy.
+        Converts detections to BoundingBox objects.
+
+        Returns
+        -------
+        List[BoundingBox]
+            All palm detections across image
+
+        Raises
+        ------
+        ValueError
+            No image loaded (call predict() first)
+        """
         if self.image_np is None:
             raise ValueError("Image not loaded. Call fit(image) first.")
         result = get_sliced_prediction(
@@ -72,6 +158,29 @@ class PalmDetector:
         return palm_bboxes
 
     def draw(self, output_image_path: Optional[str] = None):
+        """
+        Visualize detections with class-colored circles.
+
+        Colors:
+        • sawit muda: Red circles
+        • sawit abnormal: Blue circles  
+        • sawit: No marking (green assumed normal)
+
+        Parameters
+        ----------
+        output_image_path : str, optional
+            Save annotated image
+
+        Returns
+        -------
+        np.ndarray
+            Annotated RGB image
+
+        Raises
+        ------
+        ValueError
+            No image or bboxes available
+        """
         if self.image_np is None:
             raise ValueError("No image loaded. Use fit() first.")
         if self.bboxes is None:
@@ -90,6 +199,19 @@ class PalmDetector:
         return image
 
     def save_bboxes_to_json(self, save_path: str):
+        """
+        Export bounding boxes as JSON array.
+
+        Parameters
+        ----------
+        save_path : str
+            Output .json file path
+
+        Raises
+        ------
+        ValueError
+            No bboxes available
+        """
         if self.bboxes is None:
             raise ValueError("No bounding boxes available. Run fit() first.")
         dicts = [bbox.dict() for bbox in self.bboxes]
@@ -99,7 +221,24 @@ class PalmDetector:
     
     def save_bboxes_to_geojson(self, tif_path: str, geojson_path: str):
         """
-        Save bounding boxes as GeoJSON polygons using georeferenced coordinates from TIFF.
+        Export bounding boxes as GeoJSON polygons with georeferencing.
+
+        Converts pixel coordinates → (lon,lat) using TIFF transform.
+        Creates rectangular polygon per bbox with label property.
+
+        Parameters
+        ----------
+        tif_path : str
+            Reference georeferenced TIFF
+        geojson_path : str  
+            Output GeoJSON file
+
+        Raises
+        ------
+        ValueError
+            No bboxes available
+        rasterio.errors.RasterioIOError
+            Invalid TIFF file
         """
         if self.bboxes is None:
             raise ValueError("No bounding boxes available. Run predict() first.")

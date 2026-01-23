@@ -1,0 +1,222 @@
+
+<!DOCTYPE html>
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>algorithm.pipeline &#8212; Croptic Deep Learning Open  documentation</title>
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css" />
+    <link rel="stylesheet" type="text/css" href="../../_static/alabaster.css" />
+    <script data-url_root="../../" id="documentation_options" src="../../_static/documentation_options.js"></script>
+    <script src="../../_static/jquery.js"></script>
+    <script src="../../_static/underscore.js"></script>
+    <script src="../../_static/_sphinx_javascript_frameworks_compat.js"></script>
+    <script src="../../_static/doctools.js"></script>
+    <script src="../../_static/sphinx_highlight.js"></script>
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+   
+  <link rel="stylesheet" href="../../_static/custom.css" type="text/css" />
+  
+
+  
+  
+
+  </head><body>
+  <div class="document">
+    
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper"><div class="relations">
+<h3>Related Topics</h3>
+<ul>
+  <li><a href="../../index.html">Documentation overview</a><ul>
+  <li><a href="../index.html">Module code</a><ul>
+  </ul></li>
+  </ul></li>
+</ul>
+</div>
+<div id="searchbox" style="display: none" role="search">
+  <h3 id="searchlabel">Quick search</h3>
+    <div class="searchformwrapper">
+    <form class="search" action="../../search.html" method="get">
+      <input type="text" name="q" aria-labelledby="searchlabel" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"/>
+      <input type="submit" value="Go" />
+    </form>
+    </div>
+</div>
+<script>document.getElementById('searchbox').style.display = "block"</script>
+        </div>
+      </div>
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          
+
+          <div class="body" role="main">
+            
+  <h1>Source code for algorithm.pipeline</h1><div class="highlight"><pre>
+<span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">List</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">algorithm.palmDetection</span><span class="w"> </span><span class="kn">import</span> <span class="n">PalmDetector</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">algorithm.cleanness</span><span class="w"> </span><span class="kn">import</span> <span class="n">LandCleannessAnalyzer</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">algorithm.clustering</span><span class="w"> </span><span class="kn">import</span> <span class="n">ClusterPalm</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">algorithm.infraDetection</span><span class="w"> </span><span class="kn">import</span> <span class="n">InfraDetector</span>
+
+<div class="viewcode-block" id="palmAnalysisPipeline"><a class="viewcode-back" href="../../index.html#algorithm.pipeline.palmAnalysisPipeline">[docs]</a><span class="k">class</span><span class="w"> </span><span class="nc">palmAnalysisPipeline</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    End-to-end oil palm plantation analysis pipeline.</span>
+
+<span class="sd">    Orchestrates four core analysis modules:</span>
+<span class="sd">    1. PalmDetector → Bounding boxes (normal/young/abnormal)</span>
+<span class="sd">    2. InfraDetector → Infrastructure polygons (buildings, etc.)</span>
+<span class="sd">    3. LandCleannessAnalyzer → Vegetation greenness grid (excl. palms)</span>
+<span class="sd">    4. ClusterPalm → Spatial clustering + convex hull polygons</span>
+
+<span class="sd">    Outputs 4 GeoJSON/TIFF files:</span>
+<span class="sd">    - bbox_palm.geojson: Palm detections</span>
+<span class="sd">    - polygon_infra.geojson: Buildings/roads  </span>
+<span class="sd">    - cleanness_grid.tif: Greenness raster</span>
+<span class="sd">    - clusters_map.geojson: Palm clusters</span>
+
+<span class="sd">    Designed for drone/aerial satellite imagery of oil palm plantations.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+        <span class="bp">self</span><span class="p">,</span>
+        <span class="n">palm_detector_model_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">seg_model_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">config_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+        <span class="n">grid_size</span><span class="p">:</span> <span class="nb">tuple</span> <span class="o">=</span> <span class="p">(</span><span class="mi">30</span><span class="p">,</span> <span class="mi">30</span><span class="p">),</span>
+        <span class="n">cluster_n</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
+        <span class="n">min_cluster</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
+        <span class="n">device</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;cuda&quot;</span><span class="p">,</span>
+    <span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Initialize full analysis pipeline with all sub-modules.</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        palm_detector_model_path : str</span>
+<span class="sd">            Palm detection model weights (.pth)</span>
+<span class="sd">        seg_model_path : str  </span>
+<span class="sd">            Segmentation model HF ID (e.g. &quot;nvidia/segformer...&quot;)</span>
+<span class="sd">        config_path : str</span>
+<span class="sd">            MMDetection config (.py) for palm detector</span>
+<span class="sd">        grid_size : tuple[int,int], default=(30,30)</span>
+<span class="sd">            Cleanness analysis grid (rows,cols)</span>
+<span class="sd">        cluster_n : int, default=5</span>
+<span class="sd">            Target palm cluster count</span>
+<span class="sd">        min_cluster : int, default=5</span>
+<span class="sd">            Discard clusters with &lt;N palms</span>
+<span class="sd">        device : str, default=&quot;cuda&quot;</span>
+<span class="sd">            &quot;cuda&quot; or &quot;cpu&quot; for all models</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">grid_size</span> <span class="o">=</span> <span class="n">grid_size</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cluster_n</span> <span class="o">=</span> <span class="n">cluster_n</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">min_cluster</span> <span class="o">=</span> <span class="n">min_cluster</span>
+
+        <span class="c1"># Oil Palm Detector</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">palm_detector</span> <span class="o">=</span> <span class="n">PalmDetector</span><span class="p">(</span><span class="n">palm_detector_model_path</span><span class="p">,</span> <span class="n">config_path</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        
+        <span class="c1"># Infra Detector</span>
+        <span class="n">seg_model_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">seg_model_path</span>
+        <span class="n">selected_labels</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">seg_model</span> <span class="o">=</span> <span class="n">InfraDetector</span><span class="p">(</span><span class="n">model_name</span><span class="o">=</span><span class="n">seg_model_name</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">selected_labels</span> <span class="o">=</span> <span class="n">selected_labels</span> <span class="ow">or</span> <span class="p">[</span><span class="s2">&quot;building&quot;</span><span class="p">]</span>
+
+        <span class="c1"># Cleanliness Analyzer</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cleanliness_analyzer</span> <span class="o">=</span> <span class="n">LandCleannessAnalyzer</span><span class="p">(</span><span class="n">grid_size</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">grid_size</span><span class="p">)</span>
+
+        <span class="c1"># Cluster Palm</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">clustering</span> <span class="o">=</span> <span class="n">ClusterPalm</span><span class="p">(</span><span class="n">n_clusters</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cluster_n</span><span class="p">,</span> <span class="n">min_cluster</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">min_cluster</span><span class="p">)</span>
+
+<div class="viewcode-block" id="palmAnalysisPipeline.run"><a class="viewcode-back" href="../../index.html#algorithm.pipeline.palmAnalysisPipeline.run">[docs]</a>    <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_path</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">output_dir</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;output&quot;</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">        Execute complete analysis pipeline on single image.</span>
+
+<span class="sd">        **Processing Steps** (sequential):</span>
+<span class="sd">        1. **Palm Detection** → bbox_palm.geojson</span>
+<span class="sd">        2. **Infrastructure Segmentation** → polygon_infra.geojson  </span>
+<span class="sd">        3. **Land Cleanness Grid** → cleanness_grid.tif</span>
+<span class="sd">        4. **Palm Clustering** → clusters_map.geojson</span>
+
+<span class="sd">        Creates `output_dir/` automatically.</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        image_path : str</span>
+<span class="sd">            Input image (TIFF/JPG/PNG, georeferenced preferred)</span>
+<span class="sd">        output_dir : str, default=&quot;output&quot;</span>
+<span class="sd">            Output directory</span>
+
+<span class="sd">        Returns</span>
+<span class="sd">        -------</span>
+<span class="sd">        Dict[str,str]</span>
+<span class="sd">            Output file paths mapping</span>
+
+<span class="sd">        Raises</span>
+<span class="sd">        ------</span>
+<span class="sd">        FileNotFoundError</span>
+<span class="sd">            Model paths invalid</span>
+<span class="sd">        ValueError</span>
+<span class="sd">            Image loading/model inference failures</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">output_dir</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+        <span class="c1"># Detect bounding boxes</span>
+        <span class="n">bboxes</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">palm_detector</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">image_path</span><span class="p">)</span>
+        <span class="n">output_bbox_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">output_dir</span><span class="p">,</span> <span class="s2">&quot;bbox_palm.geojson&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">palm_detector</span><span class="o">.</span><span class="n">save_bboxes_to_geojson</span><span class="p">(</span><span class="n">image_path</span><span class="p">,</span> <span class="n">output_bbox_path</span><span class="p">)</span>
+        <span class="c1">#self.palm_detector.save_bboxes_to_json(output_json_path)</span>
+        <span class="c1">#output_image_path = os.path.join(output_dir, &quot;detection.png&quot;)</span>
+        <span class="c1">#self.palm_detector.draw(output_image_path)</span>
+        
+        <span class="c1"># Segment selected region labels and extract polygons</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">seg_model</span><span class="o">.</span><span class="n">predict_sliced</span><span class="p">(</span><span class="n">image_path</span><span class="p">,</span> <span class="n">selected_labels</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">selected_labels</span><span class="p">)</span>
+        <span class="n">output_polygon_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">output_dir</span><span class="p">,</span> <span class="s2">&quot;polygon_infra.geojson&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">seg_model</span><span class="o">.</span><span class="n">save_polygons_to_geojson</span><span class="p">(</span><span class="n">image_path</span><span class="p">,</span> <span class="n">output_polygon_path</span><span class="p">)</span>
+        <span class="c1">#with open(polygons_json_path, &#39;w&#39;) as f:</span>
+        <span class="c1">#    json.dump(segmentation_result, f, indent=4)</span>
+        <span class="c1">#print(f&quot;✅ Saved polygons for labels {self.selected_labels} to {polygons_json_path}&quot;)</span>
+        
+        <span class="c1"># Analyze cleanness/greenness grid</span>
+        <span class="c1">#cleanness_dir = os.path.join(output_dir, &quot;cleanness&quot;)</span>
+        <span class="c1">#os.makedirs(cleanness_dir, exist_ok=True)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cleanliness_analyzer</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">image_path</span><span class="p">,</span> <span class="n">bboxes</span><span class="p">)</span>
+        <span class="c1">#heatmap_path = os.path.join(output_dir, &quot;cleanness_heatmap.png&quot;)</span>
+        <span class="c1">#self.cleanliness_analyzer.save_cleanness_heatmap(save_path=heatmap_path)</span>
+        <span class="n">raster_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">output_dir</span><span class="p">,</span> <span class="s2">&quot;cleanness_grid.tif&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cleanliness_analyzer</span><span class="o">.</span><span class="n">save_cleanness_raster</span><span class="p">(</span><span class="n">output_tif_path</span><span class="o">=</span><span class="n">raster_path</span><span class="p">)</span>
+
+        <span class="c1"># Step 4: Cluster boxes and draw clusters</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">clustering</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">bbox_list</span><span class="o">=</span><span class="n">bboxes</span><span class="p">,</span> <span class="n">image</span><span class="o">=</span><span class="n">image_path</span><span class="p">)</span>
+        <span class="c1">#leaf_widths = clustering.compute_leaf_width_per_cluster() # Compute averange leaf width</span>
+        <span class="n">cluster_output_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">output_dir</span><span class="p">,</span> <span class="s2">&quot;clusters_map.geojson&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">clustering</span><span class="o">.</span><span class="n">save_cluster_polygons_to_geojson</span><span class="p">(</span><span class="n">image_path</span><span class="p">,</span> <span class="n">cluster_output_path</span><span class="p">)</span></div></div>
+
+        
+</pre></div>
+
+          </div>
+          
+        </div>
+      </div>
+    <div class="clearer"></div>
+  </div>
+    <div class="footer">
+      &#169;2026, Croptic Team.
+      
+      |
+      Powered by <a href="https://www.sphinx-doc.org/">Sphinx 5.3.0</a>
+      &amp; <a href="https://alabaster.readthedocs.io">Alabaster 0.7.16</a>
+      
+    </div>
+
+    
+
+    
+  </body>
+</html>

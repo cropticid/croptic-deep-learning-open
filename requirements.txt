@@ -19,3 +19,6 @@ rasterio
 sahi==0.11.14
 
 modal==0.65.65
+
+#docs 
+sphinx==5.3.0
