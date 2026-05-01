@@ -10,7 +10,6 @@ This repository provides an end-to-end oil palm plantation analysis pipeline for
   - `ClusterPalm` for spatial clustering of palms and cluster polygon generation.  
 - Main outputs: GeoJSON and GeoTIFF files ready for GIS tools (e.g., QGIS) or web mapping.
 
-***
 
 ## Requirements & environment
 
@@ -37,8 +36,6 @@ The Dockerfile uses:
 - `mmcv-full==1.5.0` installed from the OpenMMLab index for torch 1.11 / cu113  
 - All other dependencies installed with `pip`  
 - Repository copied into `/workspace` and local package `packages/Co-DETR` installed in editable mode.
-
-***
 
 ## Setup with Docker
 
@@ -69,7 +66,6 @@ docker run --gpus all -it --rm \
 
 This mounts your local `data` and `output` directories into the container.
 
-***
 
 ## Setup without Docker (local install)
 
@@ -88,7 +84,6 @@ The script will:
 
 If `torch` is missing, install a compatible version (e.g., `torch==1.11.0+cu113` and matching `torchvision`/`torchaudio`) before rerunning `install.py`.
 
-***
 
 ## How to run the pipeline (CLI)
 
@@ -137,7 +132,6 @@ pipeline = palmAnalysisPipeline(
 pipeline.run("data/sample.tif", output_dir="output/sample")
 ```
 
-***
 
 ## Outputs
 
